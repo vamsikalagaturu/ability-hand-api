@@ -21,7 +21,8 @@ class AbilityHandControl:
 
 		self.sleep_fn = sleep_fn or (lambda x: time.sleep(x))
 
-		self.interrupt_flag = False
+		self.open_interrupt_flag = False
+		self.close_interrupt_flag = False
 
 		self.finger_pos_min = [5.0, 5.0, 5.0, 5.0, 5.0, 5.0]
 		## Cap at 90 for fingers, 50 for thumb to avoid collision
@@ -29,6 +30,8 @@ class AbilityHandControl:
 
 		self.fingers_opened = False
 		self.fingers_closed = False
+
+		self.lock = threading.Lock()
 
 		if not self.connect():
 			print("Failed to connect to hand")
@@ -71,9 +74,15 @@ class AbilityHandControl:
 		self.serial.reset_input_buffer()
 
 		self.fingers_opened = False
-		self.interrupt_flag = False
+		self.open_interrupt_flag = False
 
-		while True:
+		if self.lock.locked():
+			print('data locked')
+			return
+
+		self.lock.acquire()
+
+		while True and not self.open_interrupt_flag:
 			for i in finger_indices:
 				if i == 5:
 					new_pos[i] = new_pos[i] + 0.5
@@ -92,10 +101,16 @@ class AbilityHandControl:
 				self.fingers_opened = True
 
 			# break when interrupted
-			if self.fingers_opened and (non_blocking or self.interrupt_flag):
+			if self.fingers_opened and (non_blocking or self.open_interrupt_flag):
 				break
 
+		self.lock.release()
+
 	def open_fingers_threaded(self, finger_indices, limits_min=None):
+		while self.lock.locked():
+			print('data locked')
+			self.sleep_fn(self.sleep_time)
+		
 		thread = threading.Thread(target=self.open_fingers, args=(finger_indices, limits_min, False))
 		
 		thread.daemon = True
@@ -106,11 +121,16 @@ class AbilityHandControl:
 			while thread.is_alive() and not self.fingers_opened:
 				self.sleep_fn(self.sleep_time)
 		except KeyboardInterrupt:
-			self.interrupt_flag = True
+			self.open_interrupt_flag = True
 			print('KeyboardInterrupt in open_fingers_threaded')
 			thread.join()
 
 	def close_fingers_threaded(self, finger_indices, limits_max=None):
+		
+		while self.lock.locked():
+			print('data locked')
+			self.sleep_fn(self.sleep_time)
+
 		thread = threading.Thread(target=self.close_fingers, args=(finger_indices, limits_max, False))
 		
 		thread.daemon = True
@@ -121,7 +141,7 @@ class AbilityHandControl:
 			while thread.is_alive() and not self.fingers_closed:
 				self.sleep_fn(self.sleep_time)
 		except KeyboardInterrupt:
-			self.interrupt_flag = True
+			self.close_interrupt_flag = True
 			print('KeyboardInterrupt in close_fingers_threaded')
 			thread.join()
 
@@ -139,9 +159,15 @@ class AbilityHandControl:
 		self.serial.reset_input_buffer()
 
 		self.fingers_closed = False
-		self.interrupt_flag = False
+		self.close_interrupt_flag = False
 
-		while True:
+		if self.lock.locked():
+			print('data locked')
+			return
+
+		self.lock.acquire()
+
+		while True and not self.close_interrupt_flag:
 			for i in finger_indices:
 				if i == 5:
 					new_pos[i] = new_pos[i] - 0.5
@@ -162,8 +188,10 @@ class AbilityHandControl:
 				self.fingers_closed = True
 
 			# break when interrupted
-			if self.fingers_closed and (non_blocking or self.interrupt_flag):
+			if self.fingers_closed and (non_blocking or self.close_interrupt_flag):
 				break
+
+		self.lock.release()
 
 	def open_hand(self):
 		# open hand to max position
@@ -291,10 +319,30 @@ class AbilityHandControl:
 if __name__ == "__main__":
 	hand_control = AbilityHandControl()
 
+	# while True:
+	# 	hand_control.interrupt_flag = True
+	# 	hand_control.open_fingers_threaded([0, 1, 2, 3, 4, 5])
+	# 	time.sleep(1)
+	# 	hand_control.interrupt_flag = True
+	# 	hand_control.close_fingers_threaded([0, 1, 2, 3, 4, 5])
+	# 	time.sleep(1)
+
 	while True:
-		hand_control.interrupt_flag = True
-		hand_control.open_fingers_threaded([0, 1, 2, 3, 4, 5])
-		time.sleep(1)
-		hand_control.interrupt_flag = True
-		hand_control.close_fingers_threaded([0, 1, 2, 3, 4, 5])
-		time.sleep(1)
+		hand_control.close_interrupt_flag = True
+		hand_control.open_interrupt_flag = False
+		hand_control.open_fingers_threaded([0, 1, 2, 3])
+		# time.sleep(1)
+		hand_control.open_interrupt_flag = True
+		hand_control.close_interrupt_flag = False
+		hand_control.close_fingers_threaded([0, 1, 2, 3])
+		# time.sleep(1)
+		hand_control.close_interrupt_flag = True
+		hand_control.open_interrupt_flag = False
+		hand_control.close_fingers_threaded([5])
+		# # time.sleep(2)
+		hand_control.close_interrupt_flag = True
+		hand_control.open_interrupt_flag = False
+		hand_control.open_fingers_threaded([5])
+		# time.sleep(2)
+		hand_control.open_interrupt_flag = True
+		hand_control.close_interrupt_flag = False
