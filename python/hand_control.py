@@ -8,7 +8,7 @@ from PPP_stuffing import *
 from abh_api_core import *
 
 
-class HandControl:
+class AbilityHandControl:
 	def __init__(self, sleep_time=0.01, sleep_fn=None):
 		self.port = None
 		self.baudrate = 460800
@@ -17,6 +17,7 @@ class HandControl:
 		self.reply_mode_header = 0x10
 		self.read_only_mode_header = 0xA0
 		self.sleep_time = sleep_time
+		self.serial: serial.Serial = None
 
 		self.sleep_fn = sleep_fn or (lambda x: time.sleep(x))
 
@@ -24,8 +25,9 @@ class HandControl:
 
 		self.finger_pos_min = [5.0, 5.0, 5.0, 5.0, 5.0, 5.0]
 		## Cap at 90 for fingers, 50 for thumb to avoid collision
-		self.finger_pos_max = [90, 90, 90, 90, 50, -75]
+		self.finger_pos_max = [90, 90, 90, 90, 50, -50]
 
+		self.fingers_opened = False
 		self.fingers_closed = False
 
 		if not self.connect():
@@ -35,6 +37,12 @@ class HandControl:
 		## Upsample the thumb rotator
 		msg = self.create_misc_msg(0xC2)
 		self.serial.write(msg)
+
+		# read current positions
+		msg = self.read_only_mode()
+		self.serial.write(PPP_stuff(bytearray(msg)))
+		pos, _, _ = self.read_data()
+		print(f'Current positions: {pos}')
 
 	def side_grasp(self):
 		self.close_fingers([5], non_blocking=True)
@@ -49,7 +57,7 @@ class HandControl:
 				self.open_fingers(idx)
 				self.close_fingers(idx)
 
-	def open_fingers(self, finger_indices, limits_min=None):
+	def open_fingers(self, finger_indices, limits_min=None, non_blocking=False):
 		# open hand to max position
 		limits_min = limits_min or self.finger_pos_min
 
@@ -61,6 +69,9 @@ class HandControl:
 		new_pos = pos.copy()
 
 		self.serial.reset_input_buffer()
+
+		self.fingers_opened = False
+		self.interrupt_flag = False
 
 		while True:
 			for i in finger_indices:
@@ -78,7 +89,26 @@ class HandControl:
 
 			# break if required fingers are open
 			if all(new_pos[i] == limits_min[i] for i in finger_indices):
+				self.fingers_opened = True
+
+			# break when interrupted
+			if self.fingers_opened and (non_blocking or self.interrupt_flag):
 				break
+
+	def open_fingers_threaded(self, finger_indices, limits_min=None):
+		thread = threading.Thread(target=self.open_fingers, args=(finger_indices, limits_min))
+		
+		thread.daemon = True
+		self.fingers_opened = False
+
+		try:
+			thread.start()
+			while thread.is_alive() and not self.fingers_opened:
+				self.sleep_fn(self.sleep_time)
+		except KeyboardInterrupt:
+			self.interrupt_flag = True
+			print('KeyboardInterrupt in open_fingers_threaded')
+			thread.join()
 
 	def close_fingers_threaded(self, finger_indices, limits_max=None):
 		thread = threading.Thread(target=self.close_fingers, args=(finger_indices, limits_max))
@@ -109,6 +139,7 @@ class HandControl:
 		self.serial.reset_input_buffer()
 
 		self.fingers_closed = False
+		self.interrupt_flag = False
 
 		while True:
 			for i in finger_indices:
@@ -122,6 +153,9 @@ class HandControl:
 			msg = self.generateTX(new_pos)
 			self.serial.write(PPP_stuff(bytearray(msg)))
 			self.sleep_fn(self.sleep_time)
+
+			# pos, _, _ = self.read_data()
+
 			self.serial.reset_input_buffer()
 
 			if all(new_pos[i] == limits_max[i] for i in finger_indices):
@@ -137,22 +171,25 @@ class HandControl:
 
 	def close_hand(self):
 		# close hand to min position
-		self.close_fingers([0, 1, 2, 3, 4, 5])
+		# self.close_fingers([0, 1, 2, 3, 4, 5])
+		self.close_fingers_threaded([0, 1, 2, 3, 4, 5])
 
 	def __del__(self):
-		try:
-			print("Closing serial port")
-			self.open_hand()
-			self.serial.close()
-		except Exception as e:
-			print(e)
-			self.open_hand()
-			self.serial.close()
+		if self.serial is not None:
+			try:
+				print("Closing serial port")
+				# TODO: revert this
+				# self.open_hand()
+				self.serial.close()
+			except Exception as e:
+				print(e)
+				self.open_hand()
+				self.serial.close()
 
 	def connect(self) -> bool:
 		com_ports_list = list_ports.comports()
 		for port in com_ports_list:
-			if "TTL" in port.interface:
+			if "TTL" in port.description:
 				self.port = port.device
 				print("Found port: ", self.port)
 				break
@@ -161,7 +198,7 @@ class HandControl:
 			return False
 
 		try:
-			self.serial = serial.Serial(self.port, self.baudrate, timeout=0.1)
+			self.serial = serial.Serial(self.port, self.baudrate, timeout=0)
 			print("Serial port opened")
 			return True
 		except:
@@ -225,13 +262,13 @@ class HandControl:
 
 		return txBuf
 
-	def read_data(self):
+	def read_data(self, size=512):
 		bytebuffer = bytes([])
 		stuff_buffer = np.array([])
 
 		nb = bytes([])
 		while len(nb) == 0:
-			nb = self.serial.read(512)  # gigantic read size with nonblocking
+			nb = self.serial.read(size)  # gigantic read size with nonblocking
 
 		bytebuffer = bytebuffer + nb
 
@@ -252,16 +289,14 @@ class HandControl:
 
 
 if __name__ == "__main__":
-	hand_control = HandControl()
+	hand_control = AbilityHandControl()
 
-	hand_control.open_fingers([0, 1, 2, 3, 4, 5])
-	hand_control.close_fingers_threaded([0, 1, 2, 3, 4, 5])
+	# hand_control.open_fingers([5])
+	hand_control.close_fingers([5])
+	time.sleep(5)
 
-	time.sleep(1)
-	# * This is the only way to stop the thread as of now
-	# if not set, the thread will keep trying to close the fingers
-	hand_control.interrupt_flag = True
-
-	hand_control.open_fingers([0, 1, 2, 3, 4, 5])
-	hand_control.side_grasp()
-	hand_control.interrupt_flag = True
+	# while True:
+		# hand_control.open_fingers([5])
+		# hand_control.close_fingers([5], non_blocking=True)
+		# time.sleep(2)
+		# hand_control.interrupt_flag = True
