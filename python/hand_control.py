@@ -34,9 +34,9 @@ class AbilityHandControl:
 			print("Failed to connect to hand")
 			return
 
-		## Upsample the thumb rotator
-		# msg = self.create_misc_msg(0xC2)
-		# self.serial.write(msg)
+		# Upsample the thumb rotator
+		msg = self.create_misc_msg(0xC2)
+		self.serial.write(msg)
 
 		# read current positions
 		msg = self.read_only_mode()
